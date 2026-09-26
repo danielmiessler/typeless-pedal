@@ -8,6 +8,7 @@ const CG = dlopen("/System/Library/Frameworks/CoreGraphics.framework/CoreGraphic
   CGEventSourceCreate: { args: [FFIType.i32], returns: FFIType.ptr },
   CGEventCreateKeyboardEvent: { args: [FFIType.ptr, FFIType.u16, FFIType.bool], returns: FFIType.ptr },
   CGEventSetFlags: { args: [FFIType.ptr, FFIType.u64], returns: FFIType.void },
+  CGEventSetIntegerValueField: { args: [FFIType.ptr, FFIType.u32, FFIType.i64], returns: FFIType.void },
   CGEventPost: { args: [FFIType.u32, FFIType.ptr], returns: FFIType.void },
 });
 const CF = dlopen("/System/Library/Frameworks/CoreFoundation.framework/CoreFoundation", {
@@ -15,15 +16,24 @@ const CF = dlopen("/System/Library/Frameworks/CoreFoundation.framework/CoreFound
 });
 
 const HID_STATE = 1, HID_TAP = 0;
-// macOS virtual key codes. Change KEY_LETTER to match your Typeless shortcut.
-const KEY_RIGHT_CTRL = 62, KEY_LETTER = 38; // 38 = J
+// macOS virtual key codes. KEY_LETTER must match your Typeless Dictate shortcut.
+// It's F19 rather than J because Typeless swallows its shortcut below Hammerspoon;
+// with Typeless on Right Ctrl+F19, the physical Right Ctrl+J is free for the
+// keyboard adapter to catch (see keyboard/typeless_keys.lua).
+const KEY_RIGHT_CTRL = 62, KEY_LETTER = 80; // 80 = F19
 const FLAG_CTRL = 0x40000n, FLAG_RIGHT_CTRL_DEVICE = 0x2000n;
 const held = FLAG_CTRL | FLAG_RIGHT_CTRL_DEVICE;
+
+// Stamped on every event we post (kCGEventSourceUserData) so the keyboard adapter
+// can tell our synthetic Right Ctrl+J from a physical one and let it through.
+// Must match SYNTHETIC_MARK in keyboard/typeless-keys.lua.
+const EVENT_SOURCE_USER_DATA = 42, SYNTHETIC_MARK = 0x7479706cn; // "typl"
 
 const src = CG.symbols.CGEventSourceCreate(HID_STATE);
 function post(code: number, down: boolean, flags: bigint) {
   const e = CG.symbols.CGEventCreateKeyboardEvent(src, code, down);
   CG.symbols.CGEventSetFlags(e, flags);
+  CG.symbols.CGEventSetIntegerValueField(e, EVENT_SOURCE_USER_DATA, SYNTHETIC_MARK);
   CG.symbols.CGEventPost(HID_TAP, e);
   CF.symbols.CFRelease(e);
 }
