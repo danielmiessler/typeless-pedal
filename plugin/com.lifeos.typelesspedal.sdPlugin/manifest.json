@@ -1,0 +1,23 @@
+{
+  "UUID": "com.lifeos.typelesspedal",
+  "Name": "Typeless Pedal",
+  "Author": "LifeOS",
+  "Description": "Tap to toggle Typeless dictation, or hold to dictate and release to stop.",
+  "Version": "1.0.0.0",
+  "SDKVersion": 2,
+  "CodePath": "bin/plugin",
+  "CodePathMac": "bin/plugin",
+  "Icon": "icons/plugin",
+  "Category": "LifeOS",
+  "CategoryIcon": "icons/plugin",
+  "OS": [{ "Platform": "mac", "MinimumVersion": "12" }],
+  "Software": { "MinimumVersion": "6.4" },
+  "Actions": [{
+    "UUID": "com.lifeos.typelesspedal.dictate",
+    "Name": "Dictate (tap or hold)",
+    "Icon": "icons/action",
+    "Tooltip": "Tap to toggle Typeless dictation; hold to dictate until release.",
+    "Controllers": ["Keypad"],
+    "States": [{ "Image": "icons/key", "Title": "Dictate" }]
+  }]
+}
