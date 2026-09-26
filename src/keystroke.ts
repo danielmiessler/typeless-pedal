@@ -40,4 +40,13 @@ export async function toggleDictation() {
   await Bun.sleep(20);
 }
 
+const KEY_RETURN = 36;
+
+// A plain Return press, used to send what Typeless just pasted.
+export async function pressEnter() {
+  post(KEY_RETURN, true, 0n);
+  await Bun.sleep(30);
+  post(KEY_RETURN, false, 0n);
+}
+
 if (import.meta.main) await toggleDictation();

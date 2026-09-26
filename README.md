@@ -3,7 +3,7 @@
 A Stream Deck plugin that gives [Typeless](https://www.typeless.com) dictation two modes on one foot pedal (or key):
 
 - **Tap** starts dictation. Tap again to stop. Good for long, hands-free rambles.
-- **Hold** starts dictation, and letting go stops it. Good for quick bursts.
+- **Hold** starts dictation, and letting go stops it and presses Enter once Typeless has pasted the text. Good for quick bursts you want sent.
 
 Typeless only supports tap-to-toggle. If you hold its shortcut, it stops recording and tells you "Don't hold. Press key once." This plugin fakes the hold: pressing the pedal sends one tap, and releasing it after 0.4 seconds or more sends a second tap.
 
@@ -30,6 +30,8 @@ Restart Stream Deck, then drag **Dictate (tap or hold)** from the LifeOS categor
 ## Tuning
 
 - `HOLD_MS` in `src/plugin.ts` (default 400) is the press length that counts as a hold.
+- `ENTER_AFTER_HOLD` in `src/plugin.ts` (default true) turns the auto-Enter off. The plugin reads Typeless's local history database to know when the paste is done, and skips Enter if the dictation was cancelled or had no speech.
+
 - Presses are logged to `~/Library/Logs/TypelessPedal.log`.
 
 ## One quirk
