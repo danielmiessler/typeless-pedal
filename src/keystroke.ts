@@ -50,6 +50,18 @@ export async function toggleDictation() {
   await Bun.sleep(20);
 }
 
+const KEY_J = 38;
+
+// Typeless keeps its own list of held keys from an event tap below Hammerspoon, so
+// it sees the physical Right Ctrl+J the adapter swallows. While those are down,
+// our Right Ctrl+F19 reads as a three-key combo and is ignored. Posting their
+// key-ups first clears that list; apps just see a stray key-up. Once J starts
+// auto-repeating it re-enters the list, so this only works early in the press.
+export function releaseKeyboardShortcut() {
+  post(KEY_J, false, 0n);
+  post(KEY_RIGHT_CTRL, false, 0n);
+}
+
 const KEY_RETURN = 36;
 
 // A plain Return press, used to send what Typeless just pasted.
