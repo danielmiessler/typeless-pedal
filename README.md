@@ -38,6 +38,10 @@ bun install.ts
 
 Restart Stream Deck, then drag **Dictate (tap or hold)** from the LifeOS category onto a pedal or key.
 
+## Muting while you dictate
+
+Typeless's "Mute audio when dictating" setting mutes the system output device. Some outputs have no mute or volume control, such as virtual and pro-audio devices (Merging's MT VAD, for one), and there it silently does nothing. So the plugin and the keyboard listener each watch Typeless, and while it is recording they mute every app's audio with a CoreAudio process tap, which works on any output device. The mute follows Typeless's actual recording, not key presses, and it follows the Typeless setting: turn that off and this stops muting too. Needs macOS 14.2 or later. `bun src/mute.ts 3000` mutes everything for three seconds, to check it by ear.
+
 ## Tuning
 
 - `HOLD_MS` in `src/dictate.ts` (default 400) is the press length that counts as a hold.
