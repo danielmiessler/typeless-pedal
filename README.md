@@ -38,9 +38,9 @@ bun install.ts
 
 Restart Stream Deck, then drag **Dictate (tap or hold)** from the LifeOS category onto a pedal or key.
 
-## Muting while you dictate
+## Pausing while you dictate
 
-Typeless's "Mute audio when dictating" setting mutes the system output device. Some outputs have no mute or volume control, such as virtual and pro-audio devices (Merging's MT VAD, for one), and there it silently does nothing. So `install.ts` also builds `~/Applications/TypelessMute.app`, a background app started at login that mutes every app’s audio with a CoreAudio process tap, which works on any output device. A tap only mutes for an app macOS lets record system audio, which is why this is its own app. Typeless restarts its mic on any audio-device change, so the app sets the tap up once at launch and flips the mute when the pedal or keyboard announces a press, before Typeless starts recording, then lifts it when recording ends. The installer signs the app with your Apple Development certificate so macOS asks for the permission once, not after every rebuild. It follows Typeless’s setting: turn that off and this stops muting too. Needs macOS 14.2 or later. `open -n -g ~/Applications/TypelessMute.app --args --test 3000` mutes everything for three seconds, to check it by ear.
+Typeless’s “Mute audio when dictating” setting mutes the system output device, which does nothing on outputs with no mute control, such as virtual and pro-audio devices (Merging’s MT VAD, for one). Muting through a CoreAudio tap instead makes every audio app reinitialise, which stutters the machine and makes Typeless drop key presses, so this pauses rather than mutes. When a press starts a dictation and a media app (a browser, Music, Spotify, Podcasts, TV, VLC, IINA, QuickTime) is playing, `src/pause.ts` sends the media Play/Pause key through Hammerspoon, and sends it again when the recording ends. It follows the Typeless setting: turn that off and nothing is paused.
 
 ## Tuning
 
