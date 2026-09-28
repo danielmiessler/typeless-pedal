@@ -1,9 +1,5 @@
 // Stream Deck plugin: one pedal, two Typeless dictation modes (see dictate.ts).
 import { log, press, release } from "./dictate.ts";
-import { startMuteWatcher } from "./mute.ts";
-
-// Each input process mutes on its own, so the pedal does not depend on Hammerspoon.
-startMuteWatcher("pedal plugin");
 
 // Stream Deck launches the plugin with: -port P -pluginUUID U -registerEvent E -info JSON
 const arg = (name: string) => process.argv[process.argv.indexOf(name) + 1];

@@ -40,7 +40,7 @@ Restart Stream Deck, then drag **Dictate (tap or hold)** from the LifeOS categor
 
 ## Muting while you dictate
 
-Typeless's "Mute audio when dictating" setting mutes the system output device. Some outputs have no mute or volume control, such as virtual and pro-audio devices (Merging's MT VAD, for one), and there it silently does nothing. So the plugin and the keyboard listener each watch Typeless, and while it is recording they mute every app's audio with a CoreAudio process tap, which works on any output device. The mute follows Typeless's actual recording, not key presses, and it follows the Typeless setting: turn that off and this stops muting too. Needs macOS 14.2 or later. `bun src/mute.ts 3000` mutes everything for three seconds, to check it by ear.
+Typeless's "Mute audio when dictating" setting mutes the system output device. Some outputs have no mute or volume control, such as virtual and pro-audio devices (Merging's MT VAD, for one), and there it silently does nothing. So `install.ts` also builds `~/Applications/TypelessMute.app`, a background app started at login, which watches Typeless and, while it is recording, mutes every app's audio with a CoreAudio process tap. That works on any output device. A tap only mutes for an app macOS lets record system audio, which is why this is its own app: allow it when macOS asks. The mute follows Typeless's actual recording, not key presses, and it follows the Typeless setting: turn that off and this stops muting too. Needs macOS 14.2 or later. `open -n -g ~/Applications/TypelessMute.app --args --test 3000` mutes everything for three seconds, to check it by ear.
 
 ## Tuning
 

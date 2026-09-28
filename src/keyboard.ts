@@ -9,7 +9,6 @@
 import { chmodSync, rmSync } from "node:fs";
 import { press, release, log } from "./dictate.ts";
 import { releaseKeyboardShortcut } from "./keystroke.ts";
-import { startMuteWatcher } from "./mute.ts";
 
 export const SOCKET = `${process.env.HOME}/Library/Application Support/TypelessPedal/keyboard.sock`;
 
@@ -43,5 +42,4 @@ Bun.listen({
   },
 });
 chmodSync(SOCKET, 0o600);
-startMuteWatcher("keyboard listener");
 log("keyboard listener started");
