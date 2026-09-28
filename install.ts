@@ -22,8 +22,24 @@ const app = `${homedir()}/Applications/TypelessMute.app`;
 const agent = `${homedir()}/Library/LaunchAgents/${MUTE_ID}.plist`;
 const exe = `${app}/Contents/MacOS/TypelessMute`;
 const domain = `gui/${process.getuid!()}`;
+
+// macOS remembers the audio permission per signing identity. An ad-hoc signature
+// changes with every build, so each rebuild would ask again. Sign with a real
+// certificate (TYPELESS_MUTE_SIGN_IDENTITY, else the first "Apple Development" one)
+// and the permission survives rebuilds; and skip the rebuild when nothing changed.
+const identities = await $`security find-identity -v -p codesigning`.nothrow().text();
+const identity = process.env.TYPELESS_MUTE_SIGN_IDENTITY
+  ?? identities.match(/"(Apple Development: [^"]+)"/)?.[1]
+  ?? "-";
+const sources = ["./src/mute.ts", "./src/dictate.ts", "./src/keystroke.ts", "./install.ts"];
+const builtAt = (await Bun.file(exe).exists()) ? Bun.file(exe).lastModified : 0;
+const signedBy = (await $`codesign -dvv ${app}`.nothrow().quiet()).stderr.toString().match(/Authority=(.+)/)?.[1] ?? "-";
+const current = builtAt > 0 && sources.every((s) => Bun.file(s).lastModified < builtAt) && signedBy === identity;
+
 await $`launchctl bootout ${domain}/${MUTE_ID}`.nothrow().quiet();
 await $`mkdir -p ${app}/Contents/MacOS ${homedir()}/Library/LaunchAgents`;
+if (current) console.log(`TypelessMute.app is current; not rebuilding, so its audio permission stays.`);
+else {
 await $`bun build --compile ./src/mute.ts --outfile ${exe}`;
 await Bun.write(`${app}/Contents/Info.plist`, `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -37,7 +53,9 @@ await Bun.write(`${app}/Contents/Info.plist`, `<?xml version="1.0" encoding="UTF
   <key>NSAudioCaptureUsageDescription</key><string>TypelessMute silences other apps' audio while Typeless is dictating.</string>
 </dict></plist>
 `);
-await $`codesign --force -s - --identifier ${MUTE_ID} ${app}`;
+await $`codesign --force -s ${identity} --identifier ${MUTE_ID} ${app}`;
+if (identity === "-") console.log(`No signing certificate found: TypelessMute.app is signed ad hoc, so macOS asks for audio permission again after each rebuild.`);
+}
 await Bun.write(agent, `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0"><dict>
@@ -52,4 +70,4 @@ await $`launchctl bootstrap ${domain} ${agent}`;
 console.log(`Installed ${app} and started it at login (${agent})`);
 
 console.log(`Restart Stream Deck, then drag "Dictate (tap or hold)" onto a pedal or key.`);
-console.log(`The first mute asks to let TypelessMute record system audio. Allow it, or muting stays off.`);
+console.log(`The first mute after a new signature asks to let TypelessMute record system audio. Allow it once.`);

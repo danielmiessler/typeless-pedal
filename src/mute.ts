@@ -10,8 +10,9 @@
 // It follows Typeless's recording state, not key presses, so it is right for taps,
 // holds, and dictations Typeless ends on its own.
 import { dlopen, FFIType, ptr, CString, type Pointer } from "bun:ffi";
-import { readFileSync } from "node:fs";
-import { log } from "./dictate.ts";
+import { chmodSync, mkdirSync, readFileSync, rmSync } from "node:fs";
+import { dirname } from "node:path";
+import { log, MUTE_SOCKET } from "./dictate.ts";
 
 const POLL_MS = 100;
 const SETTINGS = `${process.env.HOME}/Library/Application Support/Typeless/app-settings.json`;
@@ -25,7 +26,8 @@ const objc = dlopen(lib, {
 // objc_msgSend called with other argument lists.
 const msgPtr = dlopen(lib, { objc_msgSend: { args: [FFIType.ptr, FFIType.ptr, FFIType.ptr], returns: FFIType.ptr } }).symbols.objc_msgSend;
 const msgInt = dlopen(lib, { objc_msgSend: { args: [FFIType.ptr, FFIType.ptr, FFIType.i64], returns: FFIType.void } }).symbols.objc_msgSend;
-const msgPtrInt = dlopen(lib, { objc_msgSend: { args: [FFIType.ptr, FFIType.ptr, FFIType.ptr, FFIType.u64], returns: FFIType.ptr } }).symbols.objc_msgSend;
+const msgRetInt = dlopen(lib, { objc_msgSend: { args: [FFIType.ptr, FFIType.ptr], returns: FFIType.i64 } }).symbols.objc_msgSend;
+const msgPtrInt =dlopen(lib, { objc_msgSend: { args: [FFIType.ptr, FFIType.ptr, FFIType.ptr, FFIType.u64], returns: FFIType.ptr } }).symbols.objc_msgSend;
 const msgJson = dlopen(lib, { objc_msgSend: { args: [FFIType.ptr, FFIType.ptr, FFIType.ptr, FFIType.u64, FFIType.ptr], returns: FFIType.ptr } }).symbols.objc_msgSend;
 // CATapDescription lives in CoreAudio but needs Foundation loaded.
 dlopen("/System/Library/Frameworks/Foundation.framework/Foundation", { NSLog: { args: [FFIType.ptr], returns: FFIType.void } });
@@ -40,6 +42,7 @@ const CA = dlopen("/System/Library/Frameworks/CoreAudio.framework/CoreAudio", {
   AudioDeviceStop: { args: [FFIType.u32, FFIType.ptr], returns: FFIType.i32 },
   AudioObjectGetPropertyDataSize: { args: [FFIType.u32, FFIType.ptr, FFIType.u32, FFIType.ptr, FFIType.ptr], returns: FFIType.i32 },
   AudioObjectGetPropertyData: { args: [FFIType.u32, FFIType.ptr, FFIType.u32, FFIType.ptr, FFIType.ptr, FFIType.ptr], returns: FFIType.i32 },
+  AudioObjectSetPropertyData: { args: [FFIType.u32, FFIType.ptr, FFIType.u32, FFIType.ptr, FFIType.u32, FFIType.ptr], returns: FFIType.i32 },
 }).symbols;
 const libc = dlopen("/usr/lib/libSystem.B.dylib", {
   proc_pidpath: { args: [FFIType.i32, FFIType.ptr, FFIType.u32], returns: FFIType.i32 },
@@ -68,14 +71,6 @@ function readU32s(object: number, selector: string): number[] {
   if (CA.AudioObjectGetPropertyData(object, ptr(address), 0, null, ptr(size), ptr(out))) return [];
   return [...out.subarray(0, size[0] / 4)];
 }
-function readString(object: number, selector: string): string {
-  const size = new Uint32Array([8]);
-  const out = new BigUint64Array(1);
-  if (CA.AudioObjectGetPropertyData(object, ptr(addressOf(selector)), 0, null, ptr(size), ptr(out)) || !out[0]) return "";
-  const s = nsString(Number(out[0]) as Pointer);
-  objc.objc_msgSend(Number(out[0]) as Pointer, sel("release"));
-  return s;
-}
 
 // CoreAudio process objects are stable for a process's lifetime, so each is resolved once.
 const isTypeless = new Map<number, boolean>();
@@ -91,11 +86,16 @@ function belongsToTypeless(processObject: number): boolean {
   return known;
 }
 
-// Typeless records from its helper process; its input runs only while dictating.
-export function typelessRecording(): boolean {
+// CoreAudio process objects that belong to Typeless.
+function typelessProcesses(): number[] {
   const processes = readU32s(SYSTEM_OBJECT, "prs#");
   for (const key of isTypeless.keys()) if (!processes.includes(key)) isTypeless.delete(key);
-  return processes.some((p) => belongsToTypeless(p) && readU32s(p, "piri")[0] === 1);
+  return processes.filter(belongsToTypeless);
+}
+
+// Typeless records from its helper process; its input runs only while dictating.
+export function typelessRecording(): boolean {
+  return typelessProcesses().some((p) => readU32s(p, "piri")[0] === 1);
 }
 
 function muteSettingOn(): boolean {
@@ -109,17 +109,22 @@ function nsObjectFromJson(value: unknown): Pointer {
   return msgJson(cls("NSJSONSerialization"), sel("JSONObjectWithData:options:error:"), data, 0, null)!;
 }
 
-// A global tap with the "muted" behaviour silences every process's output while an
-// aggregate device containing it is running. All of it is private to this process,
-// and CoreAudio tears it down if this process dies.
-const CA_TAP_MUTED = 1;
-type Mute = { tap: number; device: number; ioProc: Pointer };
-let active: Mute | null = null;
+// A global process tap whose mute behaviour is "muted" silences every process's
+// output while an aggregate device holding it runs. All of it is private to this
+// process, and CoreAudio tears it down if this process dies.
+// Typeless restarts its microphone whenever audio devices appear, disappear, start
+// or stop, so doing any of that mid-dictation flapped the mute and made Typeless
+// drop stop taps. So the tap and a running aggregate are set up once at launch,
+// unmuted, and muting only flips the tap's mute behaviour in place.
+const CA_TAP_UNMUTED = 0, CA_TAP_MUTED = 1;
+type Tap = { tap: number; device: number; ioProc: Pointer };
+let setup: Tap | null = null;
+let muted = false;
 
-export function muteAll(): string | null {
-  if (active) return null;
+function createTap(): string | null {
+  if (setup) return null;
   const description = msgPtr(objc.objc_msgSend(cls("CATapDescription"), sel("alloc")), sel("initStereoGlobalTapButExcludeProcesses:"), objc.objc_msgSend(cls("NSArray"), sel("array")))!;
-  msgInt(description, sel("setMuteBehavior:"), CA_TAP_MUTED);
+  msgInt(description, sel("setMuteBehavior:"), CA_TAP_UNMUTED);
   msgInt(description, sel("setPrivate:"), 1);
   const tapUid = nsString(objc.objc_msgSend(objc.objc_msgSend(description, sel("UUID"))!, sel("UUIDString")));
   const tapId = new Uint32Array(1);
@@ -127,7 +132,8 @@ export function muteAll(): string | null {
   objc.objc_msgSend(description, sel("release"));
   if (status) return `create tap: ${status}`;
 
-  const outputUid = readString(readU32s(SYSTEM_OBJECT, "dOut")[0] ?? 0, "uid ");
+  // The aggregate holds only the tap. Adding the output device as a subdevice also
+  // opens that device's input, which is often Typeless's microphone.
   const deviceId = new Uint32Array(1);
   status = CA.AudioHardwareCreateAggregateDevice(nsObjectFromJson({
     uid: `com.lifeos.typelessmute.${process.pid}.${Date.now()}`,
@@ -135,7 +141,6 @@ export function muteAll(): string | null {
     private: 1,
     stacked: 0,
     tapautostart: 1,
-    ...(outputUid ? { master: outputUid, subdevices: [{ uid: outputUid }] } : {}),
     taps: [{ uid: tapUid, drift: 1 }],
   }), ptr(deviceId));
   if (status) { CA.AudioHardwareDestroyProcessTap(tapId[0]); return `create aggregate: ${status}`; }
@@ -144,31 +149,108 @@ export function muteAll(): string | null {
   status = CA.AudioDeviceCreateIOProcID(deviceId[0], NOOP_IOPROC, null, ptr(procId));
   const ioProc = Number(procId[0]) as Pointer;
   if (!status) status = CA.AudioDeviceStart(deviceId[0], ioProc);
-  active = { tap: tapId[0], device: deviceId[0], ioProc };
-  if (status) { unmuteAll(); return `start: ${status}`; }
+  setup = { tap: tapId[0], device: deviceId[0], ioProc };
+  if (status) { destroyTap(); return `start: ${status}`; }
   return null;
 }
 
-export function unmuteAll() {
-  if (!active) return;
-  const { tap, device, ioProc } = active;
-  active = null;
+function destroyTap() {
+  if (!setup) return;
+  const { tap, device, ioProc } = setup;
+  setup = null;
+  muted = false;
   if (ioProc) { CA.AudioDeviceStop(device, ioProc); CA.AudioDeviceDestroyIOProcID(device, ioProc); }
   CA.AudioHardwareDestroyAggregateDevice(device);
   CA.AudioHardwareDestroyProcessTap(tap);
 }
 
+// Reads the live tap's description, changes its mute behaviour, and writes it back.
+function setMuteBehavior(behavior: number): string | null {
+  const address = new Uint32Array([fourCC("tdsc"), fourCC("glob"), 0]);
+  const size = new Uint32Array([8]);
+  const out = new BigUint64Array(1);
+  let status = CA.AudioObjectGetPropertyData(setup!.tap, ptr(address), 0, null, ptr(size), ptr(out));
+  if (status || !out[0]) return `read tap: ${status}`;
+  const description = Number(out[0]) as Pointer;
+  msgInt(description, sel("setMuteBehavior:"), behavior);
+  // Typeless's own audio stays out of the tap: muting its output made it restart
+  // its microphone mid-dictation and drop stop taps.
+  msgPtr(description, sel("setProcesses:"), nsObjectFromJson(typelessProcesses()));
+  // Not released: CoreAudio's ownership of the returned description is not
+  // documented, and releasing it crashed. A few bytes per dictation.
+  status = CA.AudioObjectSetPropertyData(setup!.tap, ptr(address), 0, null, 8, ptr(out));
+  return status ? `set tap: ${status}` : null;
+}
+
+// The live tap's mute behaviour as CoreAudio reports it, for the test mode's log line.
+function currentMuteBehavior(): number {
+  if (!setup) return -1;
+  const address = new Uint32Array([fourCC("tdsc"), fourCC("glob"), 0]);
+  const size = new Uint32Array([8]);
+  const out = new BigUint64Array(1);
+  if (CA.AudioObjectGetPropertyData(setup.tap, ptr(address), 0, null, ptr(size), ptr(out)) || !out[0]) return -1;
+  return Number(msgRetInt(Number(out[0]) as Pointer, sel("isMuted")));
+}
+
+export function muteAll(): string | null {
+  if (muted) return null;
+  const error = createTap() ?? setMuteBehavior(CA_TAP_MUTED);
+  if (error) return error;
+  muted = true;
+  return null;
+}
+
+export function unmuteAll() {
+  if (!muted || !setup) return;
+  setMuteBehavior(CA_TAP_UNMUTED);
+  muted = false;
+}
+
+// Any CoreAudio change while Typeless records (even flipping this tap's mute) makes
+// it restart its microphone, and a stop tap that lands during the restart is lost.
+// So the mute is flipped on the pedal or keyboard press, before Typeless opens its
+// mic, and lifted once that recording ends. A dictation started any other way
+// (Typeless's own shortcut) is left unmuted rather than disturbed.
+const NO_RECORDING_MS = 3000; // a press that starts nothing is un-muted after this
+
 export function startMuteWatcher(source: string) {
-  process.on("exit", unmuteAll);
+  process.on("exit", destroyTap);
   for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"] as const) process.on(signal, () => process.exit(0));
+  const error = createTap(); // up front, so no device appears later
+  if (error) log(`${source} tap setup failed, will retry on first dictation: ${error}`);
+
+  let mutedAt = 0, sawRecording = false;
+  // One line per press from src/dictate.ts; the reply lets the press go ahead.
+  mkdirSync(dirname(MUTE_SOCKET), { recursive: true });
+  rmSync(MUTE_SOCKET, { force: true });
+  Bun.listen({
+    unix: MUTE_SOCKET,
+    socket: {
+      data(sock) {
+        // A press while Typeless records is a stop tap: nothing to do.
+        if (!muted && muteSettingOn() && !typelessRecording()) {
+          const error = muteAll();
+          mutedAt = Date.now();
+          sawRecording = false;
+          log(error ? `${source} mute failed: ${error}` : `${source} press: muted background audio`);
+        }
+        sock.write("ok\n");
+        sock.end();
+      },
+    },
+  });
+  chmodSync(MUTE_SOCKET, 0o600);
+
+  // Typeless's mic can drop for a moment early in a recording; only a gap longer
+  // than RECORDING_GAP_MS counts as the recording ending.
+  const RECORDING_GAP_MS = 600;
+  let lastRecordingAt = 0;
   setInterval(() => {
-    const recording = typelessRecording();
-    if (recording && !active && muteSettingOn()) {
-      const error = muteAll();
-      log(error ? `${source} mute failed: ${error}` : `${source} recording: muted background audio`);
-    } else if (!recording && active) {
+    if (!muted) return;
+    if (typelessRecording()) { sawRecording = true; lastRecordingAt = Date.now(); return; }
+    if (sawRecording ? Date.now() - lastRecordingAt > RECORDING_GAP_MS : Date.now() - mutedAt > NO_RECORDING_MS) {
       unmuteAll();
-      log(`${source} stopped: unmuted`);
+      log(`${source} ${sawRecording ? "recording ended" : "no recording started"}: unmuted`);
     }
   }, POLL_MS);
   log(`${source} started`);
@@ -180,9 +262,11 @@ if (import.meta.main) {
   if (process.argv.includes("--test")) {
     const ms = Number(process.argv[process.argv.indexOf("--test") + 1]) || 3000;
     const error = muteAll();
-    log(error ? `mute test failed: ${error}` : `mute test: muted for ${ms}ms`);
+    log(error ? `mute test failed: ${error}` : `mute test: muted for ${ms}ms (tap mute behaviour ${currentMuteBehavior()})`);
     if (!error) await Bun.sleep(ms);
     unmuteAll();
+    log(`mute test: unmuted (tap mute behaviour ${currentMuteBehavior()})`);
+    destroyTap();
     process.exit(error ? 1 : 0);
   }
   startMuteWatcher("mute app");

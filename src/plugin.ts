@@ -16,6 +16,9 @@ ws.onmessage = async (m) => {
   if (msg.event === "keyDown") {
     pressedAt.set(msg.context, Date.now());
     await press("pedal");
+  } else if (msg.event === "willAppear" || msg.event === "willDisappear") {
+    // Shows whether the action is on the page a pedal is currently showing.
+    log(`pedal action ${msg.event === "willAppear" ? "shown" : "hidden"} on device ${msg.device}`);
   } else if (msg.event === "keyUp") {
     const held = Date.now() - (pressedAt.get(msg.context) ?? Date.now());
     pressedAt.delete(msg.context);
