@@ -98,7 +98,34 @@ export function typelessRecording(): boolean {
   return typelessProcesses().some((p) => readU32s(p, "piri")[0] === 1);
 }
 
-function muteSettingOn(): boolean {
+// Apps whose playback the media Play/Pause key controls. Only these trigger a pause,
+// so the key never lands on an app that was not playing (a call, a game).
+const MEDIA_APP = /\/(Google Chrome|Safari|Firefox|Arc|Brave Browser|Microsoft Edge|Music|Spotify|Podcasts|TV|VLC|IINA|QuickTime Player)\.app\//;
+const processPath = new Map<number, string>();
+function pathOf(processObject: number): string {
+  let path = processPath.get(processObject);
+  if (path === undefined) {
+    const pid = readU32s(processObject, "ppid")[0];
+    const buf = Buffer.alloc(4096);
+    const n = pid ? libc.proc_pidpath(pid, ptr(buf), buf.length) : 0;
+    path = n > 0 ? buf.toString("utf8", 0, n) : "";
+    processPath.set(processObject, path);
+  }
+  return path;
+}
+
+// The media app currently sending audio out, if any. Read-only: it only asks
+// CoreAudio which processes are running output, so it cannot disturb Typeless.
+export function playingMediaApp(): string | null {
+  for (const p of readU32s(SYSTEM_OBJECT, "prs#")) {
+    if (readU32s(p, "piro")[0] !== 1) continue;
+    const match = pathOf(p).match(MEDIA_APP);
+    if (match) return match[1];
+  }
+  return null;
+}
+
+export function muteSettingOn(): boolean {
   try { return JSON.parse(readFileSync(SETTINGS, "utf8")).enabledMuteBackgroundAudio !== false; }
   catch { return true; } // Typeless's own default is on.
 }
@@ -228,13 +255,16 @@ export function startMuteWatcher(source: string) {
     socket: {
       data(sock) {
         // A press while Typeless records is a stop tap: nothing to do.
+        // "muted" tells the press to let Typeless settle before its start tap.
+        let reply = "ok";
         if (!muted && muteSettingOn() && !typelessRecording()) {
           const error = muteAll();
           mutedAt = Date.now();
           sawRecording = false;
+          if (!error) reply = "muted";
           log(error ? `${source} mute failed: ${error}` : `${source} press: muted background audio`);
         }
-        sock.write("ok\n");
+        sock.write(`${reply}\n`);
         sock.end();
       },
     },

@@ -9,6 +9,7 @@
 import { appendFileSync } from "node:fs";
 import { Database } from "bun:sqlite";
 import { pressEnter, toggleDictation } from "./keystroke.ts";
+import { pauseForDictation } from "./pause.ts";
 
 export const HOLD_MS = 400;
 const ENTER_AFTER_HOLD = true;
@@ -49,30 +50,12 @@ async function waitForPaste(startedAt: number, endedAt: number): Promise<boolean
   return false;
 }
 
-// TypelessMute.app (src/mute.ts) mutes background audio when told a press is coming,
-// because it cannot safely mute once Typeless is recording. Waits for its reply, at
-// most MUTE_WAIT_MS; if the app is not running, the press goes ahead unmuted.
+// Socket the retired TypelessMute.app listened on (src/mute.ts keeps its code).
 export const MUTE_SOCKET = `${process.env.HOME}/Library/Application Support/TypelessPedal/mute.sock`;
-const MUTE_WAIT_MS = 150;
-function announcePress(): Promise<void> {
-  return new Promise((resolve) => {
-    const timer = setTimeout(resolve, MUTE_WAIT_MS);
-    const done = () => { clearTimeout(timer); resolve(); };
-    Bun.connect({
-      unix: MUTE_SOCKET,
-      socket: {
-        open(sock) { sock.write("press\n"); },
-        data(sock) { sock.end(); done(); },
-        close: done,
-        error: done,
-        connectError: done,
-      },
-    }).catch(done);
-  });
-}
 
 export async function press(source: string) {
-  await announcePress();
+  // Not awaited: its checks run now, before the start tap, and the media key after.
+  pauseForDictation(log, source).catch((e) => log(`pause error: ${e}`));
   await toggleDictation();
   log(`${source} down: toggle`);
 }
