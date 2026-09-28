@@ -27,6 +27,7 @@ Stream Deck's built-in Hotkey action sends Ctrl+key as a key with a Control flag
 - macOS, Stream Deck app 6.4 or later, [Bun](https://bun.sh)
 - Typeless with its **Dictate** shortcut set to **Right Ctrl + F19**. For a different key, change `KEY_LETTER` in `src/keystroke.ts` (it's a macOS virtual key code).
 - Stream Deck needs Accessibility permission in System Settings → Privacy & Security. The Hotkey action needs this too, so you probably granted it already.
+- For the keyboard shortcut and for pausing media: [Hammerspoon](https://www.hammerspoon.org) with Accessibility permission, and `require("hs.ipc")` in `~/.hammerspoon/init.lua` so its `hs` command-line tool works.
 
 ## Install
 
@@ -40,7 +41,11 @@ Restart Stream Deck, then drag **Dictate (tap or hold)** from the LifeOS categor
 
 ## Pausing while you dictate
 
-Typeless’s “Mute audio when dictating” setting mutes the system output device, which does nothing on outputs with no mute control, such as virtual and pro-audio devices (Merging’s MT VAD, for one). Muting through a CoreAudio tap instead makes every audio app reinitialise, which stutters the machine and makes Typeless drop key presses, so this pauses rather than mutes. When a press starts a dictation and a media app (a browser, Music, Spotify, Podcasts, TV, VLC, IINA, QuickTime) is playing, `src/pause.ts` sends the media Play/Pause key through Hammerspoon, and sends it again when the recording ends. It follows the Typeless setting: turn that off and nothing is paused.
+Typeless’s “Mute audio when dictating” setting mutes the system output device, which does nothing on outputs with no mute control, such as virtual and pro-audio interfaces. Muting through a CoreAudio tap instead makes every audio app reinitialise, which stutters the machine and makes Typeless drop key presses, so this pauses rather than mutes. When a press starts a dictation and a media app (a browser, Music, Spotify, Podcasts, TV, VLC, IINA, QuickTime) is playing, `src/pause.ts` sends the media Play/Pause key through Hammerspoon, and sends it again when the recording ends. It follows the Typeless setting: turn that off and nothing is paused.
+
+## When the pedal reconnects
+
+A pedal that drops off USB and comes back (a flaky hub does this) reconnects in Stream Deck, but Stream Deck does not reattach the action to the running plugin, so presses stop arriving. The plugin watches for that and restarts itself; Stream Deck relaunches it within a few seconds with the action attached. If a pedal comes back without its serial number (System Information shows "Serial Number: Not Provided"), Stream Deck treats it as a new device with an empty profile: unplug it and plug it back in, ideally straight into the Mac rather than through a monitor or hub.
 
 ## Tuning
 

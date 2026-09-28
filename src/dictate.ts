@@ -50,9 +50,6 @@ async function waitForPaste(startedAt: number, endedAt: number): Promise<boolean
   return false;
 }
 
-// Socket the retired TypelessMute.app listened on (src/mute.ts keeps its code).
-export const MUTE_SOCKET = `${process.env.HOME}/Library/Application Support/TypelessPedal/mute.sock`;
-
 export async function press(source: string) {
   // Not awaited: its checks run now, before the start tap, and the media key after.
   pauseForDictation(log, source).catch((e) => log(`pause error: ${e}`));

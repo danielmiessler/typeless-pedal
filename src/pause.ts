@@ -4,9 +4,13 @@
 // CoreAudio tap, and switching one makes every audio app (Typeless included)
 // reinitialise, which stutters the machine and makes Typeless drop key presses.
 // Pausing uses the media Play/Pause key and only reads CoreAudio state.
-import { playingMediaApp, typelessRecording, muteSettingOn } from "./mute.ts";
+import { existsSync } from "node:fs";
+import { playingMediaApp, typelessRecording, muteSettingOn } from "./audio.ts";
 
-const HS = "/opt/homebrew/bin/hs"; // Hammerspoon's CLI posts the media key
+// Hammerspoon's CLI posts the media key. Stream Deck starts the plugin with a bare
+// PATH, so the CLI is looked up at its install locations (Apple silicon, then Intel).
+// It needs require("hs.ipc") in ~/.hammerspoon/init.lua.
+const HS = ["/opt/homebrew/bin/hs", "/usr/local/bin/hs"].find((p) => existsSync(p)) ?? "hs";
 const POLL_MS = 200;
 const RECORDING_GAP_MS = 600; // Typeless's mic can drop briefly; a longer gap ends it
 const NO_RECORDING_MS = 5000; // a press that starts nothing resumes after this
