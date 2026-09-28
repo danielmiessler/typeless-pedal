@@ -15,7 +15,7 @@ console.log(`Installed to ${dest}`);
 
 // An earlier version muted audio through a background app, TypelessMute.app. It was
 // retired (switching a CoreAudio mute makes every audio app reinitialise); remove it
-// if this Mac still has it. Pausing media needs nothing installed.
+// if this Mac still has it.
 const OLD_MUTE_ID = "com.lifeos.typelessmute";
 await $`launchctl bootout gui/${process.getuid!()}/${OLD_MUTE_ID}`.nothrow().quiet();
 for (const old of [

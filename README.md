@@ -27,7 +27,7 @@ Stream Deck's built-in Hotkey action sends Ctrl+key as a key with a Control flag
 - macOS, Stream Deck app 6.4 or later, [Bun](https://bun.sh)
 - Typeless with its **Dictate** shortcut set to **Right Ctrl + F19**. For a different key, change `KEY_LETTER` in `src/keystroke.ts` (it's a macOS virtual key code).
 - Stream Deck needs Accessibility permission in System Settings → Privacy & Security. The Hotkey action needs this too, so you probably granted it already.
-- For the keyboard shortcut and for pausing media: [Hammerspoon](https://www.hammerspoon.org) with Accessibility permission, and `require("hs.ipc")` in `~/.hammerspoon/init.lua` so its `hs` command-line tool works.
+- For the keyboard shortcut: [Hammerspoon](https://www.hammerspoon.org) with Accessibility permission.
 
 ## Install
 
@@ -39,9 +39,9 @@ bun install.ts
 
 Restart Stream Deck, then drag **Dictate (tap or hold)** from the LifeOS category onto a pedal or key.
 
-## Pausing while you dictate
+## Audio while you dictate
 
-Typeless’s “Mute audio when dictating” setting mutes the system output device, which does nothing on outputs with no mute control, such as virtual and pro-audio interfaces. Muting through a CoreAudio tap instead makes every audio app reinitialise, which stutters the machine and makes Typeless drop key presses, so this pauses rather than mutes. When a press starts a dictation and a media app (a browser, Music, Spotify, Podcasts, TV, VLC, IINA, QuickTime) is playing, `src/pause.ts` sends the media Play/Pause key through Hammerspoon, and sends it again when the recording ends. It follows the Typeless setting: turn that off and nothing is paused.
+The pedal and Right Ctrl+J do nothing to audio: no muting, no pausing. Anything playing keeps playing while you dictate.
 
 ## When the pedal reconnects
 

@@ -9,7 +9,6 @@
 import { appendFileSync } from "node:fs";
 import { Database } from "bun:sqlite";
 import { pressEnter, toggleDictation } from "./keystroke.ts";
-import { pauseForDictation } from "./pause.ts";
 
 export const HOLD_MS = 400;
 const ENTER_AFTER_HOLD = true;
@@ -51,8 +50,6 @@ async function waitForPaste(startedAt: number, endedAt: number): Promise<boolean
 }
 
 export async function press(source: string) {
-  // Not awaited: its checks run now, before the start tap, and the media key after.
-  pauseForDictation(log, source).catch((e) => log(`pause error: ${e}`));
   await toggleDictation();
   log(`${source} down: toggle`);
 }
