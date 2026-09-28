@@ -52,7 +52,7 @@ A pedal that drops off USB and comes back (a flaky hub does this) reconnects in 
 - `HOLD_MS` in `src/dictate.ts` (default 400) is the press length that counts as a hold.
 - `ENTER_AFTER_HOLD` in `src/dictate.ts` (default true) turns the auto-Enter off. The plugin reads Typeless's local history database to know when the paste is done, and skips Enter if the dictation was cancelled or had no speech.
 
-- Presses are logged to `~/Library/Logs/TypelessPedal.log`.
+- Presses are logged to `~/Library/Logs/TypelessPedal.log`. Each start press also logs how long Typeless took to open the mic (`mic live Nms after the tap`); speech before that point is not in the recording.
 
 ## One quirk
 

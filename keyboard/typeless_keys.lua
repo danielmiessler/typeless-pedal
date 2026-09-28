@@ -67,7 +67,7 @@ TypelessKeys =hs.eventtap.new({ types.keyDown, types.keyUp }, function(e)
         -- A fresh (non-repeat) press while "held" means a key-up was lost; start over.
         if not isShortcut(e) then pressedAt = nil; return false end
         pressedAt = hs.timer.absoluteTime()
-        send("down")
+        send("down " .. ("%.0f"):format(e:timestamp())) -- lets the listener log press-to-tap time
         return true
     end
     -- keyUp: releasing J ends the press, whether or not Ctrl is still down

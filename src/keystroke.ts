@@ -38,16 +38,25 @@ function post(code: number, down: boolean, flags: bigint) {
   CF.symbols.CFRelease(e);
 }
 
-// One tap of Right Ctrl+J: Typeless starts dictation if idle, stops it if recording.
-export async function toggleDictation() {
+const libc = dlopen("/usr/lib/libSystem.B.dylib", {
+  clock_gettime_nsec_np: { args: [FFIType.i32], returns: FFIType.u64 },
+});
+// Nanoseconds since boot on the clock Hammerspoon's hs.timer.absoluteTime uses.
+const CLOCK_UPTIME_RAW = 8;
+export const uptimeNs = (): bigint => BigInt(libc.symbols.clock_gettime_nsec_np(CLOCK_UPTIME_RAW));
+
+// One tap of Right Ctrl+F19: Typeless starts dictation if idle, stops it if recording.
+// Typeless acts on the key-down, so the modifier and the key go down back to back:
+// CGEventPost delivers in order, and any wait before the key-down is speech lost.
+// Returns when the key went down.
+export async function toggleDictation(): Promise<bigint> {
   post(KEY_RIGHT_CTRL, true, held);
-  await Bun.sleep(15);
   post(KEY_LETTER, true, held);
+  const downAt = uptimeNs();
   await Bun.sleep(40);
   post(KEY_LETTER, false, held);
-  await Bun.sleep(15);
   post(KEY_RIGHT_CTRL, false, 0n);
-  await Bun.sleep(20);
+  return downAt;
 }
 
 const KEY_J = 38;

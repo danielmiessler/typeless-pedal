@@ -8,7 +8,8 @@
 // Return, so a held burst is sent as soon as it's pasted. Taps never send.
 import { appendFileSync } from "node:fs";
 import { Database } from "bun:sqlite";
-import { pressEnter, toggleDictation } from "./keystroke.ts";
+import { pressEnter, toggleDictation, uptimeNs } from "./keystroke.ts";
+import { typelessRecording } from "./audio.ts";
 
 export const HOLD_MS = 400;
 const ENTER_AFTER_HOLD = true;
@@ -49,9 +50,27 @@ async function waitForPaste(startedAt: number, endedAt: number): Promise<boolean
   return false;
 }
 
-export async function press(source: string) {
-  await toggleDictation();
-  log(`${source} down: toggle`);
+const ms = (ns: bigint) => (Number(ns) / 1e6).toFixed(1);
+
+// Typeless opens the mic well after the tap. Timing it on every start press keeps the
+// real delay visible: speech before "mic live" is not in the recording. A stop tap
+// finds the mic already running and logs nothing.
+async function watchMic(source: string, downAt: bigint) {
+  if (typelessRecording()) return;
+  const deadline = downAt + 3_000_000_000n;
+  while (uptimeNs() < deadline) {
+    await Bun.sleep(2);
+    if (typelessRecording()) return log(`${source} mic live ${ms(uptimeNs() - downAt)}ms after the tap`);
+  }
+  log(`${source} mic not live 3s after the tap`);
+}
+
+// pressedAt is when the press happened, on the uptime clock (the keyboard passes the
+// key event's own timestamp), so the log shows how long our side took to tap.
+export async function press(source: string, pressedAt = uptimeNs()) {
+  const downAt = await toggleDictation();
+  log(`${source} down: toggle, tapped ${ms(downAt - pressedAt)}ms after the press`);
+  watchMic(source, downAt).catch((e) => log(`mic watch error: ${e}`));
 }
 
 export async function release(source: string, heldMs: number) {
