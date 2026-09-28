@@ -38,6 +38,13 @@ local function send(line)
     TypelessKeysConn:write(line .. "\n")
 end
 
+-- One tap of the shortcut from other Hammerspoon code (the new-session pedal
+-- in init.lua starts dictation this way). A tap toggles and never sends Enter.
+function TypelessToggle()
+    send("down")
+    send("up 0")
+end
+
 local function isShortcut(e)
     local f = e:rawFlags()
     return (f & FLAG_CTRL) ~= 0 and (f & FLAG_RIGHT_CTRL) ~= 0 and (f & FLAG_OTHERS) == 0
