@@ -31,7 +31,7 @@ static AudioObjectPropertyAddress addr(AudioObjectPropertySelector s, AudioObjec
 }
 
 // Room noise floor in dBFS, tracked from the capture: it drops at once to a quieter
-// buffer and rises about 1 dB a second. A block counts as silence below floor + 8 dB,
+// buffer and rises about 1 dB a second. A block counts as silence below floor + 12 dB,
 // and never above -35 dBFS, where speech lives.
 static _Atomic float noiseFloor = -60.0f;
 static _Atomic uint64_t skipped;
@@ -43,7 +43,7 @@ static float blockDb(uint64_t from, uint64_t len) {
 }
 
 static int silentBlock(uint64_t from, uint64_t len) {
-  float limit = fminf(atomic_load(&noiseFloor) + 8.0f, -35.0f);
+  float limit = fminf(atomic_load(&noiseFloor) + 12.0f, -35.0f);
   return blockDb(from, len) < limit;
 }
 

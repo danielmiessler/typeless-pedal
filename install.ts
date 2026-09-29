@@ -47,6 +47,12 @@ const builtAt = (await Bun.file(exe).exists()) ? Bun.file(exe).lastModified : 0;
 const signedBy = (await $`codesign -dvv ${app}`.nothrow().quiet()).stderr.toString().match(/Authority=(.+)/)?.[1] ?? "-";
 const current = builtAt > 0 && sources.every((s) => Bun.file(s).lastModified < builtAt) && signedBy === identity;
 
+// Restarting the helper mid-dictation throws away the audio it is holding for Typeless.
+const { typelessRecording } = await import("./src/audio.ts");
+for (let waited = 0; typelessRecording(); waited += 500) {
+  if (waited === 0) console.log("Typeless is recording; waiting for it to finish before restarting TypelessPreroll.");
+  await Bun.sleep(500);
+}
 await $`launchctl bootout ${domain}/${PREROLL_ID}`.nothrow().quiet();
 await $`mkdir -p ${app}/Contents/MacOS ${homedir()}/Library/LaunchAgents`;
 if (current) console.log(`TypelessPreroll.app is current; not rebuilding, so its microphone grant stays.`);

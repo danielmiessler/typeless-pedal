@@ -39,6 +39,16 @@ bun install.ts
 
 Restart Stream Deck, then drag **Dictate (tap or hold)** from the LifeOS category onto a pedal or key.
 
+## Your first word gets through (preroll bridge)
+
+Typeless takes 0.5 to 1.5 seconds after the shortcut to open the microphone, and anything said before that is lost. `preroll/` builds **TypelessPreroll.app**, a small background helper that opens the mic the moment you press (about 30 ms), buffers it, and plays it to Typeless through [BlackHole](https://github.com/ExistentialAudio/BlackHole) once Typeless starts listening. Before the stop, it waits until Typeless has heard everything through your release, skipping silence to catch up.
+
+1. `brew install --cask blackhole-2ch`, then `sudo killall coreaudiod` (or restart) so macOS loads it.
+2. `bun install.ts` builds and starts the helper and creates an input called **Typeless Preroll** (an aggregate of BlackHole; Typeless hides BlackHole itself as a virtual device). Building it needs Go.
+3. In Typeless, set the microphone to **Typeless Preroll**. Allow TypelessPreroll the microphone when macOS asks.
+
+Your real mic still does the recording: the helper captures the Mac's default input. The trade-off is that text arrives a little later after you let go.
+
 ## Audio while you dictate
 
 The pedal and Right Ctrl+J do nothing to audio: no muting, no pausing. Anything playing keeps playing while you dictate.
