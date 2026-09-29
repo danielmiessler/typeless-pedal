@@ -36,25 +36,53 @@ var (
 	sockPath    = filepath.Join(home, "Library/Application Support/TypelessPedal/preroll.sock")
 	logPath     = filepath.Join(home, "Library/Logs/TypelessPedal.log")
 	settings    = filepath.Join(home, "Library/Application Support/Typeless/app-settings.json")
-	loopbackUID = flag.String("loopback", "BlackHole2ch_UID", "device UID Typeless records from")
+	loopbackUID = flag.String("loopback", "BlackHole2ch_UID", "loopback device UID the helper plays to")
+)
+
+// Typeless records from this aggregate of the loopback. Typeless hides any input
+// Chrome labels "(Virtual)", which BlackHole is; the aggregate is not.
+const (
+	inputUID  = "com.lifeos.typelesspreroll.input"
+	inputName = "Typeless Preroll"
+)
+
+// typelessInput returns the aggregate Typeless records from, creating it if needed.
+func typelessInput() C.uint {
+	cuid, cname, csub := C.CString(inputUID), C.CString(inputName), C.CString(*loopbackUID)
+	defer C.free(unsafe.Pointer(cuid))
+	defer C.free(unsafe.Pointer(cname))
+	defer C.free(unsafe.Pointer(csub))
+	return C.ensureAggregate(cuid, cname, csub)
+}
+
+const (
+	idle    = iota
+	running // capturing; the ring plays to Typeless whenever it is steadily reading
 )
 
 const (
-	idle = iota
-	armed   // capturing, waiting for Typeless to start reading
-	flowing // Typeless is reading; the ring plays to it
+	// Extra audio played after the release before the stop tap, so the last word
+	// clears the loopback and Typeless's own buffering.
+	drainMargin = 100 * time.Millisecond
+	// Before it really records, Typeless opens and closes its input about a dozen
+	// times, ~20 ms each. Playback waits for a read this long so those flickers
+	// don't swallow the start of the dictation.
+	steadyRead = 120 * time.Millisecond
+	// Typeless must stay off its input this long before the dictation counts as over.
+	stoppedFor = 1500 * time.Millisecond
+	// An arm Typeless never reads is abandoned after this.
+	armTimeout = 6 * time.Second
 )
 
-// Extra audio played after the release before the stop tap, so the last word clears
-// the loopback and Typeless's own buffering.
-const drainMargin = 100 * time.Millisecond
-
 var (
-	mu       sync.Mutex
-	state    = idle
-	armedAt  time.Time
-	lastRead bool
-	changed  = make(chan struct{}, 1)
+	mu           sync.Mutex
+	state        = idle
+	armedAt      time.Time
+	readingSince time.Time // zero while Typeless is not reading
+	offSince     time.Time // zero while Typeless is reading
+	playing      bool      // the ring is playing to Typeless
+	everRead     bool      // Typeless read steadily at some point since the arm
+	changed      = make(chan struct{}, 1)
 )
 
 //export goAudioChanged
@@ -85,8 +113,8 @@ func name(dev C.uint, uid bool) string {
 	return C.GoString(p)
 }
 
-// Typeless must be recording from the loopback, or playing to it helps nothing.
-func typelessUsesLoopback(loopbackName string) bool {
+// Typeless must be recording from the preroll input, or playing to it helps nothing.
+func typelessUsesLoopback() bool {
 	raw, err := os.ReadFile(settings)
 	if err != nil {
 		return false
@@ -94,7 +122,7 @@ func typelessUsesLoopback(loopbackName string) bool {
 	var s struct {
 		Selected struct{ Label string } `json:"selectedMicrophoneDevice"`
 	}
-	return json.Unmarshal(raw, &s) == nil && strings.Contains(s.Selected.Label, loopbackName)
+	return json.Unmarshal(raw, &s) == nil && strings.Contains(s.Selected.Label, inputName)
 }
 
 // Resolves the mic and loopback and builds the audio units. Returns "" or why not.
@@ -105,12 +133,15 @@ func ready() string {
 	if loop == 0 {
 		return "no-loopback"
 	}
-	loopName := name(loop, false)
-	if !typelessUsesLoopback(loopName) {
+	agg := typelessInput()
+	if agg == 0 {
+		return "no-aggregate"
+	}
+	if !typelessUsesLoopback() {
 		return "not-selected"
 	}
 	mic := C.defaultInput()
-	if mic == 0 || mic == loop || strings.Contains(name(mic, true), *loopbackUID) {
+	if mic == 0 || mic == loop || mic == agg {
 		return "mic-is-loopback" // capturing what we play would loop forever
 	}
 	if rc := C.prepare(mic, loop); rc != 0 {
@@ -129,101 +160,125 @@ func backlog() time.Duration {
 	return time.Duration(float64(C.written()-C.played()) / r * float64(time.Second))
 }
 
-// start begins capture; with flow set, playback follows the live mic from the start.
-func start(flow bool) string {
-	if why := ready(); why != "" {
-		return why
+// begin starts capture into an empty ring. Caller holds mu.
+func begin(why string) string {
+	t0 := C.uptimeNs()
+	if r := ready(); r != "" {
+		return r
 	}
-	f := C.int(0)
-	if flow {
-		f = 1
-	}
-	if rc := C.startUnits(f); rc != 0 {
+	if rc := C.startUnits(0); rc != 0 {
 		return fmt.Sprintf("start-failed-%d", int(rc))
 	}
+	state, armedAt, playing, everRead = running, time.Now(), false, false
+	go func() { // how soon real audio arrived
+		for i := 0; i < 100; i++ {
+			if first := C.firstAudioNs(); first != 0 {
+				logf("capturing %s after %s", ms(time.Duration(first-t0)), why)
+				return
+			}
+			time.Sleep(2 * time.Millisecond)
+		}
+		logf("no audio 200ms after %s (Microphone permission?)", why)
+	}()
 	return ""
 }
 
-func stop(why string) {
+// end stops capture. Caller holds mu.
+func end(why string) {
 	C.stopUnits()
-	state = idle
-	logf("stopped: %s", why)
+	state, playing = idle, false
+	logf("stopped: %s (skipped %.0fms of silence, room floor %.1f dBFS)", why, float64(C.skippedMs()), float64(C.floorDb()))
 }
 
 func arm() string {
 	mu.Lock()
 	defer mu.Unlock()
 	if state != idle {
-		return "ok already"
+		if playing {
+			return "ok already" // Typeless is reading: this dictation is live
+		}
+		// Capture is still winding down from the last dictation: start this one here.
+		C.skipToNow()
+		armedAt, everRead, readingSince = time.Now(), false, time.Time{}
+		return "ok rearmed"
 	}
-	t0 := C.uptimeNs()
-	if why := start(false); why != "" {
+	if why := begin("arm"); why != "" {
 		return why
 	}
-	state, armedAt = armed, time.Now()
-	go func() { // how soon real audio arrived after the arm
-		for i := 0; i < 100; i++ {
-			if first := C.firstAudioNs(); first != 0 {
-				logf("capturing %s after arm", ms(time.Duration(first-t0)))
-				return
-			}
-			time.Sleep(2 * time.Millisecond)
-		}
-		logf("no audio 200ms after arm (Microphone permission?)")
-	}()
 	return "ok"
 }
 
 // drain returns once everything captured up to now, plus a margin, has been played
-// to Typeless. "read=0" means Typeless never started reading this dictation.
+// to Typeless. "read=0" means Typeless never read this dictation.
 func drain() string {
 	mu.Lock()
 	if state == idle {
 		mu.Unlock()
 		return "drained 0 read=0 idle"
 	}
-	rate := float64(C.sampleRate())
-	target := uint64(C.written()) + uint64(rate*drainMargin.Seconds())
-	begin := time.Now()
+	target := uint64(C.written()) + uint64(float64(C.sampleRate())*drainMargin.Seconds())
+	started := time.Now()
 	mu.Unlock()
-	deadline := begin.Add(7 * time.Second)
-	for time.Now().Before(deadline) {
+	for time.Since(started) < armTimeout+time.Second {
 		mu.Lock()
-		st, done := state, uint64(C.played()) >= target
+		st, read, done := state, everRead, uint64(C.played()) >= target
 		mu.Unlock()
 		if st == idle {
-			return fmt.Sprintf("drained %d read=0 idle", time.Since(begin).Milliseconds())
+			return fmt.Sprintf("drained %d read=%d idle", time.Since(started).Milliseconds(), b2i(read))
 		}
-		if st == flowing && done {
-			return fmt.Sprintf("drained %d read=1", time.Since(begin).Milliseconds())
+		if done {
+			return fmt.Sprintf("drained %d read=1", time.Since(started).Milliseconds())
 		}
 		time.Sleep(3 * time.Millisecond)
 	}
 	mu.Lock()
-	read := state == flowing
+	read := everRead
 	mu.Unlock()
-	if read {
-		return fmt.Sprintf("drained %d read=1 timeout", time.Since(begin).Milliseconds())
-	}
-	return fmt.Sprintf("drained %d read=0 timeout", time.Since(begin).Milliseconds())
+	return fmt.Sprintf("drained %d read=%d timeout", time.Since(started).Milliseconds(), b2i(read))
 }
 
-// onTypeless reacts to Typeless's input starting or stopping.
-func onTypeless(reading bool) {
-	mu.Lock()
-	defer mu.Unlock()
-	switch {
-	case reading && state == armed:
-		C.setFlowing(1)
-		state = flowing
-		logf("typeless reading %s after arm, playing from the press (%s behind)", ms(time.Since(armedAt)), ms(backlog()))
-	case reading && state == idle:
-		if why := start(true); why == "" {
-			state, armedAt = flowing, time.Now()
-			logf("typeless started without a press: passing the mic live")
+func b2i(b bool) int {
+	if b {
+		return 1
+	}
+	return 0
+}
+
+// step applies what Typeless's input is doing right now. Caller holds mu.
+func step(reading bool, now time.Time) {
+	if reading {
+		offSince = time.Time{}
+		if readingSince.IsZero() {
+			readingSince = now
 		}
-	case !reading && state == flowing:
-		stop("typeless stopped reading")
+		if state == idle { // Typeless started some other way: pass the mic from now
+			if why := begin("typeless started without a press"); why != "" {
+				return
+			}
+		}
+		if !playing && now.Sub(readingSince) >= steadyRead {
+			C.setFlowing(1)
+			playing = true
+			if !everRead {
+				everRead = true
+				logf("typeless reading %s after arm, playing from the press (%s behind)", ms(now.Sub(armedAt)), ms(backlog()))
+			}
+		}
+		return
+	}
+	readingSince = time.Time{}
+	if offSince.IsZero() {
+		offSince = now
+	}
+	if playing { // a flicker or the end: hold the ring until Typeless reads again
+		C.setFlowing(0)
+		playing = false
+	}
+	switch {
+	case state == running && everRead && now.Sub(offSince) >= stoppedFor:
+		end("typeless stopped reading")
+	case state == running && !everRead && now.Sub(armedAt) >= armTimeout:
+		end("typeless never started reading")
 	}
 }
 
@@ -231,30 +286,24 @@ func watch() {
 	C.watchSystem()
 	tick := time.NewTicker(5 * time.Millisecond)
 	defer tick.Stop()
-	slow := 0
+	n := 0
 	for {
 		select {
 		case <-changed:
 		case <-tick.C:
-			// Notifications carry the change; polling covers any that are missed, fast
-			// only while a dictation is starting.
 			mu.Lock()
 			st := state
-			if st == armed && time.Since(armedAt) > 6*time.Second {
-				stop("typeless never started reading")
-			}
 			mu.Unlock()
-			if slow++; st != armed && slow%40 != 0 {
+			// Fast while a dictation runs; slow while idle, where notifications carry
+			// a Typeless start and polling only backs them up.
+			if n++; st == idle && n%40 != 0 {
 				continue
 			}
 		}
 		reading := C.typelessReading() == 1
-		if reading != lastRead {
-			lastRead = reading
-			onTypeless(reading)
-		} else if reading {
-			onTypeless(true) // an arm may have landed while Typeless was already reading
-		}
+		mu.Lock()
+		step(reading, time.Now())
+		mu.Unlock()
 	}
 }
 
@@ -265,10 +314,12 @@ func status() string {
 	defer C.free(unsafe.Pointer(cuid))
 	loop := C.deviceForUID(cuid)
 	out, _ := json.Marshal(map[string]any{
-		"state":          []string{"idle", "armed", "flowing"}[state],
+		"state":          []string{"idle", "running"}[state],
+		"playing":        playing,
 		"loopback":       loop != 0,
 		"loopbackName":   name(loop, false),
-		"typelessOnLoop": loop != 0 && typelessUsesLoopback(name(loop, false)),
+		"typelessOnLoop": loop != 0 && typelessUsesLoopback(),
+		"input":          name(typelessInput(), false),
 		"mic":            name(C.defaultInput(), false),
 	})
 	return string(out)
@@ -303,7 +354,16 @@ func main() {
 		os.Exit(1)
 	}
 	os.Chmod(sockPath, 0o600)
-	logf("started (loopback %s)", *loopbackUID)
+	if typelessInput() == 0 {
+		logf("started; no %s yet (is BlackHole installed?)", *loopbackUID)
+	} else {
+		logf("started; Typeless should record from %q", inputName)
+	}
+	mu.Lock()
+	if why := ready(); why != "" { // build the audio units now, not on the first press
+		logf("not ready yet: %s", why)
+	}
+	mu.Unlock()
 	go watch()
 	for {
 		conn, err := ln.Accept()

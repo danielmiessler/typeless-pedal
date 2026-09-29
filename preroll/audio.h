@@ -13,3 +13,7 @@ unsigned long long firstAudioNs(void);
 unsigned long long uptimeNs(void);
 int typelessReading(void);
 void watchSystem(void);
+unsigned int ensureAggregate(const char *uid, const char *name, const char *subUID);
+void skipToNow(void);
+double skippedMs(void);
+double floorDb(void);

@@ -11,6 +11,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
+#include <math.h>
 
 extern void goAudioChanged(void);
 
@@ -29,6 +30,23 @@ static AudioObjectPropertyAddress addr(AudioObjectPropertySelector s, AudioObjec
   return a;
 }
 
+// Room noise floor in dBFS, tracked from the capture: it drops at once to a quieter
+// buffer and rises about 1 dB a second. A block counts as silence below floor + 8 dB,
+// and never above -35 dBFS, where speech lives.
+static _Atomic float noiseFloor = -60.0f;
+static _Atomic uint64_t skipped;
+
+static float blockDb(uint64_t from, uint64_t len) {
+  float sum = 0;
+  for (uint64_t i = 0; i < len; i++) { float s = ring[(from + i) % ringLen]; sum += s * s; }
+  return 10.0f * log10f(sum / len + 1e-12f);
+}
+
+static int silentBlock(uint64_t from, uint64_t len) {
+  float limit = fminf(atomic_load(&noiseFloor) + 8.0f, -35.0f);
+  return blockDb(from, len) < limit;
+}
+
 static OSStatus onInput(void *ref, AudioUnitRenderActionFlags *flags, const AudioTimeStamp *ts,
                         UInt32 bus, UInt32 frames, AudioBufferList *unused) {
   if (frames > inMax) return noErr;
@@ -39,6 +57,8 @@ static OSStatus onInput(void *ref, AudioUnitRenderActionFlags *flags, const Audi
   const float *src = inList->mBuffers[0].mData;
   for (UInt32 i = 0; i < frames; i++) ring[(w + i) % ringLen] = src[i];
   atomic_store(&writePos, w + frames);
+  float db = blockDb(w, frames), floor = atomic_load(&noiseFloor);
+  atomic_store(&noiseFloor, db < floor ? db : floor + 0.01f);
   uint64_t none = 0;
   atomic_compare_exchange_strong(&firstAudioAt, &none, mach_absolute_time());
   return noErr;
@@ -51,6 +71,15 @@ static OSStatus onOutput(void *ref, AudioUnitRenderActionFlags *flags, const Aud
   uint64_t r = atomic_load(&readPos), w = atomic_load(&writePos);
   if (w - r > ringLen) r = w - ringLen;  // fell a whole ring behind: skip ahead
   int flow = atomic_load(&flowing);
+  // Typeless hears the dictation behind real time. Skipping silent stretches while
+  // behind lets it catch up during pauses, so the stop after release waits less.
+  // Only runs of two silent blocks are cut, and never the last 50 ms of backlog.
+  uint64_t block = (uint64_t)(rate / 100), keep = (uint64_t)(rate / 20);
+  for (int n = 0; flow && block && n < 8 && w - r > keep + 2 * block; n++) {
+    if (!silentBlock(r, block) || !silentBlock(r + block, block)) break;
+    r += block;
+    atomic_fetch_add(&skipped, block);
+  }
   for (UInt32 i = 0; i < frames; i++) {
     float s = 0;
     if (flow && r < w) s = ring[r++ % ringLen];
@@ -60,7 +89,15 @@ static OSStatus onOutput(void *ref, AudioUnitRenderActionFlags *flags, const Aud
   return noErr;
 }
 
+static _Atomic int listDirty = 1;
+
 static OSStatus onChange(AudioObjectID o, UInt32 n, const AudioObjectPropertyAddress *a, void *c) {
+  goAudioChanged();
+  return noErr;
+}
+
+static OSStatus onProcessList(AudioObjectID o, UInt32 n, const AudioObjectPropertyAddress *a, void *c) {
+  atomic_store(&listDirty, 1);
   goAudioChanged();
   return noErr;
 }
@@ -168,6 +205,7 @@ int startUnits(int flow) {
   atomic_store(&writePos, 0);
   atomic_store(&readPos, 0);
   atomic_store(&firstAudioAt, 0);
+  atomic_store(&skipped, 0);
   atomic_store(&flowing, flow);
   if (AudioOutputUnitStart(inUnit)) return -1;
   if (AudioOutputUnitStart(outUnit)) { AudioOutputUnitStop(inUnit); return -2; }
@@ -181,6 +219,8 @@ void stopUnits(void) {
 }
 
 void setFlowing(int on) { atomic_store(&flowing, on); }
+// Drops everything captured so far: a new press starts its dictation here.
+void skipToNow(void) { atomic_store(&readPos, atomic_load(&writePos)); }
 unsigned long long written(void) { return atomic_load(&writePos); }
 unsigned long long played(void) { return atomic_load(&readPos); }
 double sampleRate(void) { return rate; }
@@ -206,32 +246,37 @@ static int isTypeless(AudioObjectID o) {
   return strstr(path, "/Typeless.app/") != NULL;
 }
 
-static AudioObjectID watched[128];
-static int nWatched;
+static AudioObjectID watched[128], typeless[16];
+static int nWatched, nTypeless;
 
-// Lists CoreAudio's process objects, subscribing to input-running changes on
-// Typeless's. Returns 1 if any Typeless process has input running.
+// Returns 1 if any Typeless process has input running. The list of Typeless's
+// process objects is rebuilt only when CoreAudio's process list changes, so this
+// is cheap enough to poll every few milliseconds.
 int typelessReading(void) {
-  AudioObjectPropertyAddress la = addr(kAudioHardwarePropertyProcessObjectList, kAudioObjectPropertyScopeGlobal);
-  UInt32 sz = 0;
-  if (AudioObjectGetPropertyDataSize(kAudioObjectSystemObject, &la, 0, NULL, &sz) || !sz) return 0;
-  AudioObjectID objs[512];
-  if (sz > sizeof objs) sz = sizeof objs;
-  if (AudioObjectGetPropertyData(kAudioObjectSystemObject, &la, 0, NULL, &sz, objs)) return 0;
-  int reading = 0;
   AudioObjectPropertyAddress ra = addr(kAudioProcessPropertyIsRunningInput, kAudioObjectPropertyScopeGlobal);
-  for (UInt32 i = 0; i < sz / sizeof(AudioObjectID); i++) {
-    if (!isTypeless(objs[i])) continue;
-    int known = 0;
-    for (int j = 0; j < nWatched; j++) if (watched[j] == objs[i]) known = 1;
-    if (!known && nWatched < 128) {
-      AudioObjectAddPropertyListener(objs[i], &ra, onChange, NULL);
-      watched[nWatched++] = objs[i];
+  if (atomic_exchange(&listDirty, 0)) {
+    AudioObjectPropertyAddress la = addr(kAudioHardwarePropertyProcessObjectList, kAudioObjectPropertyScopeGlobal);
+    AudioObjectID objs[512];
+    UInt32 sz = sizeof objs;
+    nTypeless = 0;
+    if (!AudioObjectGetPropertyData(kAudioObjectSystemObject, &la, 0, NULL, &sz, objs)) {
+      for (UInt32 i = 0; i < sz / sizeof(AudioObjectID) && nTypeless < 16; i++) {
+        if (!isTypeless(objs[i])) continue;
+        typeless[nTypeless++] = objs[i];
+        int known = 0;
+        for (int j = 0; j < nWatched; j++) if (watched[j] == objs[i]) known = 1;
+        if (!known && nWatched < 128) {
+          AudioObjectAddPropertyListener(objs[i], &ra, onChange, NULL);
+          watched[nWatched++] = objs[i];
+        }
+      }
     }
-    UInt32 on = 0, osz = sizeof on;
-    if (!AudioObjectGetPropertyData(objs[i], &ra, 0, NULL, &osz, &on) && on) reading = 1;
   }
-  return reading;
+  for (int i = 0; i < nTypeless; i++) {
+    UInt32 on = 0, osz = sizeof on;
+    if (!AudioObjectGetPropertyData(typeless[i], &ra, 0, NULL, &osz, &on) && on) return 1;
+  }
+  return 0;
 }
 
 // Deliver HAL notifications on the HAL's own thread (no run loop here), and hear
@@ -241,5 +286,34 @@ void watchSystem(void) {
   CFRunLoopRef none = NULL;
   AudioObjectSetPropertyData(kAudioObjectSystemObject, &rl, 0, NULL, sizeof none, &none);
   AudioObjectPropertyAddress la = addr(kAudioHardwarePropertyProcessObjectList, kAudioObjectPropertyScopeGlobal);
-  AudioObjectAddPropertyListener(kAudioObjectSystemObject, &la, onChange, NULL);
+  AudioObjectAddPropertyListener(kAudioObjectSystemObject, &la, onProcessList, NULL);
 }
+
+// Wraps the loopback in a public aggregate device. Typeless hides inputs that Chrome
+// labels "(Virtual)", which BlackHole is; an aggregate of it is not. Returns the
+// device, creating it once; 0 on failure.
+unsigned int ensureAggregate(const char *uid, const char *name, const char *subUID) {
+  unsigned int existing = deviceForUID(uid);
+  if (existing) return existing;
+  CFStringRef cuid = CFStringCreateWithCString(NULL, uid, kCFStringEncodingUTF8);
+  CFStringRef cname = CFStringCreateWithCString(NULL, name, kCFStringEncodingUTF8);
+  CFStringRef csub = CFStringCreateWithCString(NULL, subUID, kCFStringEncodingUTF8);
+  const void *subKeys[] = {CFSTR(kAudioSubDeviceUIDKey)};
+  const void *subVals[] = {csub};
+  CFDictionaryRef sub = CFDictionaryCreate(NULL, subKeys, subVals, 1, &kCFTypeDictionaryKeyCallBacks, &kCFTypeDictionaryValueCallBacks);
+  CFArrayRef subs = CFArrayCreate(NULL, (const void **)&sub, 1, &kCFTypeArrayCallBacks);
+  int zero = 0;
+  CFNumberRef no = CFNumberCreate(NULL, kCFNumberIntType, &zero);
+  const void *keys[] = {CFSTR(kAudioAggregateDeviceUIDKey), CFSTR(kAudioAggregateDeviceNameKey),
+                        CFSTR(kAudioAggregateDeviceSubDeviceListKey), CFSTR(kAudioAggregateDeviceMainSubDeviceKey),
+                        CFSTR(kAudioAggregateDeviceIsPrivateKey), CFSTR(kAudioAggregateDeviceIsStackedKey)};
+  const void *vals[] = {cuid, cname, subs, csub, no, no};
+  CFDictionaryRef desc = CFDictionaryCreate(NULL, keys, vals, 6, &kCFTypeDictionaryKeyCallBacks, &kCFTypeDictionaryValueCallBacks);
+  AudioObjectID dev = 0;
+  OSStatus st = AudioHardwareCreateAggregateDevice(desc, &dev);
+  CFRelease(desc); CFRelease(no); CFRelease(subs); CFRelease(sub); CFRelease(csub); CFRelease(cname); CFRelease(cuid);
+  return st ? 0 : dev;
+}
+
+double skippedMs(void) { return rate ? atomic_load(&skipped) * 1000.0 / rate : 0; }
+double floorDb(void) { return atomic_load(&noiseFloor); }
