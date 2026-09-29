@@ -1,0 +1,15 @@
+int deviceName(unsigned int dev, char *buf, int len);
+int deviceUID(unsigned int dev, char *buf, int len);
+unsigned int defaultInput(void);
+unsigned int deviceForUID(const char *uid);
+int prepare(unsigned int mic, unsigned int loopback);
+int startUnits(int flow);
+void stopUnits(void);
+void setFlowing(int on);
+unsigned long long written(void);
+unsigned long long played(void);
+double sampleRate(void);
+unsigned long long firstAudioNs(void);
+unsigned long long uptimeNs(void);
+int typelessReading(void);
+void watchSystem(void);
