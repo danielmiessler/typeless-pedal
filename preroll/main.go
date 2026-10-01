@@ -36,6 +36,8 @@ var (
 	sockPath    = filepath.Join(home, "Library/Application Support/TypelessPedal/preroll.sock")
 	logPath     = filepath.Join(home, "Library/Logs/TypelessPedal.log")
 	settings    = filepath.Join(home, "Library/Application Support/Typeless/app-settings.json")
+	wisprConfig = filepath.Join(home, "Library/Application Support/Wispr Flow/config.json")
+	engineFile  = filepath.Join(home, "Library/Application Support/TypelessPedal/engine")
 	loopbackUID = flag.String("loopback", "BlackHole2ch_UID", "loopback device UID the helper plays to")
 )
 
@@ -113,8 +115,67 @@ func name(dev C.uint, uid bool) string {
 	return C.GoString(p)
 }
 
-// Typeless must be recording from the preroll input, or playing to it helps nothing.
+// The dictation app the bridge plays to: "typeless" unless engineFile says "wispr".
+// The pedal code reads the same file (src/engine.ts).
+func engine() string {
+	raw, _ := os.ReadFile(engineFile)
+	if strings.TrimSpace(string(raw)) == "wispr" {
+		return "wispr"
+	}
+	return "typeless"
+}
+
+var readerSet string
+
+// refreshReader points the CoreAudio watch at the current engine's processes. Caller holds mu.
+func refreshReader() {
+	frag := "/Typeless.app/"
+	if engine() == "wispr" {
+		frag = "/Wispr Flow.app/"
+	}
+	if frag == readerSet {
+		return
+	}
+	c := C.CString(frag)
+	C.setReader(c)
+	C.free(unsafe.Pointer(c))
+	readerSet = frag
+	logf("reader is %s", engine())
+}
+
+// Wispr Flow stores its mic as a hashed id; the name is in its ranked device list.
+func wisprUsesLoopback() bool {
+	raw, err := os.ReadFile(wisprConfig)
+	if err != nil {
+		return false
+	}
+	var s struct {
+		Prefs struct {
+			User struct {
+				Override string `json:"overrideAudioDeviceId"`
+				Ranked   []struct {
+					DeviceID string `json:"deviceId"`
+					Name     string `json:"name"`
+				} `json:"rankedAudioDevices"`
+			} `json:"user"`
+		} `json:"prefs"`
+	}
+	if json.Unmarshal(raw, &s) != nil {
+		return false
+	}
+	for _, d := range s.Prefs.User.Ranked {
+		if d.DeviceID == s.Prefs.User.Override {
+			return strings.Contains(d.Name, inputName)
+		}
+	}
+	return false
+}
+
+// The engine must be recording from the preroll input, or playing to it helps nothing.
 func typelessUsesLoopback() bool {
+	if engine() == "wispr" {
+		return wisprUsesLoopback()
+	}
 	raw, err := os.ReadFile(settings)
 	if err != nil {
 		return false
@@ -127,6 +188,7 @@ func typelessUsesLoopback() bool {
 
 // Resolves the mic and loopback and builds the audio units. Returns "" or why not.
 func ready() string {
+	refreshReader()
 	cuid := C.CString(*loopbackUID)
 	defer C.free(unsafe.Pointer(cuid))
 	loop := C.deviceForUID(cuid)
@@ -300,8 +362,11 @@ func watch() {
 				continue
 			}
 		}
-		reading := C.typelessReading() == 1
 		mu.Lock()
+		if n%40 == 0 {
+			refreshReader()
+		}
+		reading := C.typelessReading() == 1
 		step(reading, time.Now())
 		mu.Unlock()
 	}

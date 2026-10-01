@@ -48,8 +48,8 @@ const signedBy = (await $`codesign -dvv ${app}`.nothrow().quiet()).stderr.toStri
 const current = builtAt > 0 && sources.every((s) => Bun.file(s).lastModified < builtAt) && signedBy === identity;
 
 // Restarting the helper mid-dictation throws away the audio it is holding for Typeless.
-const { typelessRecording } = await import("./src/audio.ts");
-for (let waited = 0; typelessRecording(); waited += 500) {
+const { appRecording } = await import("./src/audio.ts");
+for (let waited = 0; appRecording("/Typeless.app/") || appRecording("/Wispr Flow.app/"); waited += 500) {
   if (waited === 0) console.log("Typeless is recording; waiting for it to finish before restarting TypelessPreroll.");
   await Bun.sleep(500);
 }

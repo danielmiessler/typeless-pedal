@@ -45,16 +45,17 @@ const libc = dlopen("/usr/lib/libSystem.B.dylib", {
 const CLOCK_UPTIME_RAW = 8;
 export const uptimeNs = (): bigint => BigInt(libc.symbols.clock_gettime_nsec_np(CLOCK_UPTIME_RAW));
 
-// One tap of Right Ctrl+F19: Typeless starts dictation if idle, stops it if recording.
+// One tap of Right Ctrl+<key>: the dictation app starts if idle, stops if recording.
+// key defaults to Typeless's F19; Wispr Flow's hands-free toggle passes its own.
 // Typeless acts on the key-down, so the modifier and the key go down back to back:
 // CGEventPost delivers in order, and any wait before the key-down is speech lost.
 // Returns when the key went down.
-export async function toggleDictation(): Promise<bigint> {
+export async function toggleDictation(key = KEY_LETTER): Promise<bigint> {
   post(KEY_RIGHT_CTRL, true, held);
-  post(KEY_LETTER, true, held);
+  post(key, true, held);
   const downAt = uptimeNs();
   await Bun.sleep(40);
-  post(KEY_LETTER, false, held);
+  post(key, false, held);
   post(KEY_RIGHT_CTRL, false, 0n);
   return downAt;
 }

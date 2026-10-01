@@ -236,6 +236,15 @@ unsigned long long firstAudioNs(void) {
 
 unsigned long long uptimeNs(void) { return clock_gettime_nsec_np(CLOCK_UPTIME_RAW); }
 
+// The app the bridge plays to, matched by a fragment of its executable path. Set from
+// Go when the engine changes; a change rebuilds the process list on the next poll.
+static char readerPath[128] = "/Typeless.app/";
+void setReader(const char *fragment) {
+  if (!strcmp(readerPath, fragment)) return;
+  strlcpy(readerPath, fragment, sizeof readerPath);
+  atomic_store(&listDirty, 1);
+}
+
 static int isTypeless(AudioObjectID o) {
   AudioObjectPropertyAddress a = addr(kAudioProcessPropertyPID, kAudioObjectPropertyScopeGlobal);
   pid_t pid = 0;
@@ -243,7 +252,7 @@ static int isTypeless(AudioObjectID o) {
   if (AudioObjectGetPropertyData(o, &a, 0, NULL, &sz, &pid) || !pid) return 0;
   char path[PROC_PIDPATHINFO_MAXSIZE];
   if (proc_pidpath(pid, path, sizeof path) <= 0) return 0;
-  return strstr(path, "/Typeless.app/") != NULL;
+  return strstr(path, readerPath) != NULL;
 }
 
 static AudioObjectID watched[128], typeless[16];

@@ -41,9 +41,13 @@ function audioProcesses(): { object: number; path: string }[] {
   });
 }
 
-// Typeless records from its audio helper process; its input runs only while dictating.
-export function typelessRecording(): boolean {
-  return audioProcesses().some((p) => p.path.includes("/Typeless.app/") && readU32s(p.object, "piri")[0] === 1);
+// Typeless and Wispr Flow record from helper processes inside their app bundles; their
+// input runs only while dictating. appPath is a fragment of the bundle path.
+export function appRecording(appPath: string): boolean {
+  return audioProcesses().some((p) => p.path.includes(appPath) && readU32s(p.object, "piri")[0] === 1);
 }
 
-if (import.meta.main) console.log(`typeless recording: ${typelessRecording()}`);
+if (import.meta.main) {
+  console.log(`typeless recording: ${appRecording("/Typeless.app/")}`);
+  console.log(`wispr recording: ${appRecording("/Wispr Flow.app/")}`);
+}
