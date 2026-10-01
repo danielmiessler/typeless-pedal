@@ -83,7 +83,14 @@ await Bun.write(agent, `<?xml version="1.0" encoding="UTF-8"?>
   <key>ProcessType</key><string>Interactive</string>
 </dict></plist>
 `);
-await $`launchctl bootstrap ${domain} ${agent}`;
+// bootout returns before launchd has torn the old job down; bootstrapping into that
+// window fails with "Input/output error" and leaves the helper stopped. Retry briefly.
+for (let attempt = 1; ; attempt++) {
+  const r = await $`launchctl bootstrap ${domain} ${agent}`.nothrow().quiet();
+  if (r.exitCode === 0) break;
+  if (attempt === 20) throw new Error(`launchctl bootstrap failed: ${r.stderr.toString().trim()}`);
+  await Bun.sleep(250);
+}
 console.log(`Installed ${app}, started at login (${agent}).`);
 
 console.log(`Restart Stream Deck, then drag "Dictate (tap or hold)" onto a pedal or key.`);

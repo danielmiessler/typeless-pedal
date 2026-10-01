@@ -34,6 +34,7 @@ static AudioObjectPropertyAddress addr(AudioObjectPropertySelector s, AudioObjec
 // buffer and rises about 1 dB a second. A block counts as silence below floor + 12 dB,
 // and never above -35 dBFS, where speech lives.
 static _Atomic float noiseFloor = -60.0f;
+#define DIGITAL_SILENCE_DB -100.0f
 static _Atomic uint64_t skipped;
 
 static float blockDb(uint64_t from, uint64_t len) {
@@ -57,8 +58,11 @@ static OSStatus onInput(void *ref, AudioUnitRenderActionFlags *flags, const Audi
   const float *src = inList->mBuffers[0].mData;
   for (UInt32 i = 0; i < frames; i++) ring[(w + i) % ringLen] = src[i];
   atomic_store(&writePos, w + frames);
+  // A mic delivers buffers of digital zeros as it starts. Letting those set the floor
+  // pinned it near -120 dBFS, so no real pause counted as silence and the catch-up
+  // never ran. Only buffers with real room tone move the floor.
   float db = blockDb(w, frames), floor = atomic_load(&noiseFloor);
-  atomic_store(&noiseFloor, db < floor ? db : floor + 0.01f);
+  if (db > DIGITAL_SILENCE_DB) atomic_store(&noiseFloor, db < floor ? db : floor + 0.01f);
   uint64_t none = 0;
   atomic_compare_exchange_strong(&firstAudioAt, &none, mach_absolute_time());
   return noErr;
